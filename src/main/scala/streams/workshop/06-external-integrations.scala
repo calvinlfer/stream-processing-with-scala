@@ -96,6 +96,20 @@ object ExternalSources {
         consumer.close()
     }
   }
+  
+  def pollConsumerStream(
+    topic: String,
+    connectionProps: ju.Properties
+  ): ZStream[Any, Throwable, ConsumerRecord[String, String]] =
+    ZStream
+      .bracket(
+        Task(new KafkaConsumer[String, String](connectionProps, new StringDeserializer, new StringDeserializer))
+      )(consumer => UIO(consumer.close()))
+      .tap(consumer => Task(consumer.subscribe(List(topic).asJava)))
+      .flatMap(consumer =>
+        ZStream
+        .repeatEffectChunk(Task(Chunk.fromIterable(consumer.poll(50.millis.asJava).iterator().asScala.to(Iterable))))
+      )
 
   // 3. Convert this function, which enumerates keys in an S3 bucket, to use ZStream and
   // ZManaged. Bonus points for using S3AsyncClient instead.
