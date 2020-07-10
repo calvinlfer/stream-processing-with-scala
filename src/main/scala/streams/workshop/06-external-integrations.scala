@@ -252,19 +252,18 @@ object ExternalSources extends App {
   }
 
   def messageStream(rabbit: RabbitMQ): ZStream[Any, Throwable, Message] =
-    ZStream.effectAsyncInterrupt()
-  ZStream.effectAsync[Any, Throwable, Message] { cb =>
-    rabbit.register(new Subscriber {
-      override def onError(err: Throwable): Unit =
-        cb(ZIO.fail(Some(err)))
+    ZStream.effectAsync[Any, Throwable, Message] { cb =>
+      rabbit.register(new Subscriber {
+        override def onError(err: Throwable): Unit =
+          cb(ZIO.fail(Some(err)))
 
-      override def onMessage(msg: Message): Unit =
-        cb(ZIO.succeed(Chunk.single(msg)))
+        override def onMessage(msg: Message): Unit =
+          cb(ZIO.succeed(Chunk.single(msg)))
 
-      override def onShutdown(): Unit =
-        cb(ZIO.fail(None))
-    })
-  }
+        override def onShutdown(): Unit =
+          cb(ZIO.fail(None))
+      })
+    }
 
   // 5. Convert this Reactive Streams-based publisher to a ZStream.
   val publisher =
