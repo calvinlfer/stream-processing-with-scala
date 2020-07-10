@@ -182,14 +182,14 @@ object FileIO {
       )
 
   // 6. Write a stream that synchronizes directories.
-  def synchronize(source: String, dest: String): ZStream[Blocking, Throwable, Path] = ???
-//    monitorFileCreation(source)
-//      .map(_.context())
-//      .mapM(sourceFile =>
-//        blocking.effectBlocking(
-//          Files.copy(Path.of(source, sourceFile.toString), Path.of(dest, sourceFile.toString))
-//        )
-//      )
+  def synchronize(source: String, dest: String): ZStream[Blocking, Throwable, Path] =
+    monitorFileCreation(source)
+      .map(_.context())
+      .mapM(sourceFile =>
+        blocking.effectBlocking(
+          Files.copy(Path.of(source, sourceFile.toString), Path.of(dest, sourceFile.toString))
+        )
+      )
 }
 
 object SocketIO extends App {
