@@ -1,0 +1,2 @@
+docker-compose exec postgres psql public
+copy data from test-data.sql
