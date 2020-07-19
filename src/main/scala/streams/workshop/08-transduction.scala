@@ -1,16 +1,33 @@
 package streams.workshop
 
-import zio._
+import zio.{ App => _, _ }
 import zio.duration._
 import zio.stream._
 
-object AccumulatingMaps {
+object AccumulatingMaps extends App {
+  implicit class RunSyntax[A](io: ZIO[ZEnv, Any, A]) {
+    def unsafeRun: A = Runtime.default.unsafeRun(io.provideLayer(ZEnv.live))
+  }
+
   // 1. Compute a running sum of this infinite stream using mapAccum.
-  val numbers = ZStream.iterate(0)(_ + 1)
+  val numbers = ZStream.iterate(0)(_ + 1).mapAccum(0)((sum, next) => (sum + next, sum + next))
 
   // 2. Use mapAccum to pattern match on the stream and group consecutive
   // rising numbers.
-  val risingNumbers = ZStream.repeatEffect(random.nextIntBetween(0, 21)) ?
+  // There is also mapAccumM (map accumulation with effects)
+  val risingNumbers = ZStream
+    .repeatEffect(random.nextIntBetween(0, 21))
+    .mapAccum(Chunk[Int]()) { (acc, next) =>
+      // (L, R), L = new state, R = what to emit on Stream
+      if (acc.isEmpty) (Chunk(next), None)
+      else if (acc.int(acc.size - 1) <= next) (acc.appended(next), None)
+      else (Chunk(next), Some(acc))
+    }
+    .collectSome
+    .tap(chunk => console.putStrLn(chunk.toString()))
+    .flattenChunks
+
+//  risingNumbers.runDrain.unsafeRun
 
   // 3. Using mapAccumM, write a windowed aggregation function. Sum the
   // incoming elements into windows of N seconds.
@@ -36,7 +53,11 @@ object AccumulatingMaps {
   ): ZStream[R, E, Windowed] = ???
 }
 
-object Transduction {
+object Transduction extends App {
+  implicit class RunSyntax[A](io: ZIO[ZEnv, Any, A]) {
+    def unsafeRun: A = Runtime.default.unsafeRun(io.provideLayer(ZEnv.live))
+  }
+
   case class Record(key: String, data: Long)
   def recordStream[R](schedule: Schedule[R, Any, Any]) =
     ZStream
@@ -58,24 +79,81 @@ object Transduction {
     def make: Database = data => Task(println(s"Writing ${data}")).delay(1.second)
   }
 
-  val records = recordStream(Schedule.forever) ?
+  // collectAllToMapN collects n incoming records into a map based on a key, and has a combiner function in case of
+  // collisions. When n records are reached, it will emit the Map
+  val batcher =
+    ZTransducer.collectAllToMapN[String, Record](n = 2)(_.key)((_, r2) => r2) // discard r1 (which is _)
+
+  val records: ZStream[random.Random, Nothing, Map[String, Record]] =
+    recordStream(Schedule.forever)
+      .transduce(batcher)
 
   // 2. Group the `records` stream according to their cost - the value of data - with
   // up to 32 units in total in each group. Use ZTransducer.foldWeighted.
-  val recordsWeighted = recordStream(Schedule.forever) ?
+  val recordsWeighted = recordStream(Schedule.forever).transduce {
+
+    /**
+     * foldWeighted[I, O] creates a transducer that folds elements of type `I` into a
+     * structure of type `O`, until `max` worth of elements (determined by the `costFn`)
+     * have been folded.
+     *
+     * the costFn computes the cost of the incoming element (and we also have access to the existing accumulator)
+     * if the value of the cost exceeds max (32) then it will emit what it has accumulated
+     * otherwise it will be combined in the Chunk[Record]
+     * the f function defines how to add the incoming record to the accumulator
+     */
+    ZTransducer.foldWeighted(z = Chunk[Record]())(
+      costFn = (_: Chunk[Record], incoming: Record) => incoming.data,
+      max = 32
+    )(
+      f = _.appended(_)
+    )
+  }
+
+  recordsWeighted
+    .scheduleElements(Schedule.fixed(1.second))
+    .tap(c => console.putStrLn(c.toString()))
+    .flattenChunks
+//    .runDrain
+//    .unsafeRun
 
   // 3. Create a composite transducer that operates on bytes; it should
   // decode the data to UTF8, split to lines, and group the lines into maps of lists
   // on their first letter, with up to 5 letters in every map.
-  val transducer: ZTransducer[Any, Nothing, Byte, Map[Char, List[String]]] = ???
+  val transducer: ZTransducer[Any, Nothing, Byte, Map[Char, List[String]]] =
+    (ZTransducer.utf8Decode >>> ZTransducer.splitLines).map(s => List(s)) >>> ZTransducer
+      .collectAllToMapN[Char, List[String]](n = 5)(key = listString => listString.head.head)((st1, st2) => st1 ++ st2)
 
+  // Transducers are operating on chunks directly
+
+  // create an async boundary between downstream and aggregation process
+  // if downstream is free then it can pull instead of waiting for the aggregation process to complete
+  // (get the partial results)
   // 4. Batch records in this stream into groups of up to 50 records for as long as
   // the database writing operator is busy.
-  val batchWhileBusy = recordStream(Schedule.fixed(500.millis).jittered(0.25, 1.5)).mapM(???) ?
+  val batchWhileBusy =
+//    recordStream(Schedule.fixed(0.millis).jittered(0.25, 15))
+    ZStream
+      .iterate(0L)(_ + 1L)
+      .aggregateAsync(
+        ZTransducer.collectAllN(1024)
+      ) // aggregateAsync can force an emit without the accumulator reaching 1024 elements
+      .mapM(acc =>
+        random.nextIntBetween(1, 5).flatMap(sleep => ZIO.sleep(sleep.seconds)) *> console
+          .putStrLn(s"Simulating a database (records: ${acc.length})")
+      )
+
+  //batchWhileBusy.runDrain.unsafeRun
 
   // 5. Perform adaptive batching in this stream: group the records in groups of
   // up to 50; as long as the resulting groups are under 40 records, the delay
   // between every batch emitted should increase by 50 millis.
-  val adaptiveBatching = recordStream(Schedule.fixed(500.millis).jittered(0.25, 1.5)).mapM(???) ?
+  val adaptiveBatching = recordStream(Schedule.fixed(10.millis).jittered(0.01, 15))
+    .aggregateAsyncWithin(ZTransducer.collectAllN(40), Schedule.exponential(50.milliseconds))
+    .mapM(acc =>
+      random.nextIntBetween(1, 5).flatMap(sleep => ZIO.sleep(sleep.seconds)) *> console
+        .putStrLn(s"Simulating a database (records: ${acc.length})")
+    )
 
+  adaptiveBatching.runDrain.unsafeRun
 }

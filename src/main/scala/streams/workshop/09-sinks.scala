@@ -1,21 +1,38 @@
 package streams.workshop
 
-import zio._
+import java.nio.file.Paths
+
+import zio.{ App => _, _ }
 import zio.stream._
 import org.apache.kafka.common.serialization.StringSerializer
 import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.clients.producer.ProducerRecord
 
-object Sinks {
+object Sinks extends App {
+  implicit class RunSyntax[A](io: ZIO[ZEnv, Any, A]) {
+    def unsafeRun: A = Runtime.default.unsafeRun(io.provideLayer(ZEnv.live))
+  }
+
   // 1. Extract the first element of this stream using runHead.
-  val head = ZStream.unwrap(random.nextInt.map(ZStream.range(0, _))) ?
+  val head = ZStream.unwrap(random.nextInt.map(ZStream.range(0, _))).runHead
 
   // 2. Extract the last element of this stream using runLast.
-  val last = ZStream.unwrap(random.nextInt.map(ZStream.range(0, _))) ?
+  val last = ZStream.unwrap(random.nextInt.map(ZStream.range(0, _))).runLast
 
   // 3. Parse the CSV file at the root of the repository into its header line
   // and a stream that represents the rest of the lines. Use `ZStream#peel`.
-  val peel = ZStream.fromFile(???) ?
+  // the result of peel is a ZManaged giving us the ZSink result which is the head of the
+  // stream and the rest of the stream
+  val peel = ZStream
+    .fromFile(Paths.get("DDOG.csv"))
+    .transduce(ZTransducer.utf8Decode >>> ZTransducer.splitLines)
+    .peel(ZSink.head[String])
+
+  peel.use {
+    case (head: Option[String], restOfStream: ZStream[Any, Throwable, String]) =>
+      console.putStrLn(head.toString) *>
+        restOfStream.foreach(console.putStrLn(_))
+  }.unsafeRun
 
   // 4. Transduce the bytes read from a file into lines and print them out;
   // sum the amount of bytes that were read from the file and print that out

@@ -236,7 +236,7 @@ object SocketIO extends App {
       .flatMap(i => fromReaderEffect(Task(new InputStreamReader(i))))
       .tap(c => console.putStr(c.toString))
       .runDrain
-//      .unsafeRun
+      .unsafeRun
 
   // 4. Integrate GZIP decoding using GZIPInputStream, ZStream#toInputStream
   // and ZStream.fromInputStream.

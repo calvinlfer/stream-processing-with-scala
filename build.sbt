@@ -1,4 +1,4 @@
-val ZIO = "1.0.0-RC21"
+val ZIO = "1.0.0-RC21-2"
 
 lazy val root = (project in file("."))
   .settings(
